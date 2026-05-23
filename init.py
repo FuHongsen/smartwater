@@ -1,4 +1,3 @@
-#
 """
 SmartIrrigator 集成入口
 
