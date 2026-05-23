@@ -1,6 +1,6 @@
 # smartwater
 一套用于小花园、小菜园可手机远程操控的灌溉系统
-# 🌱 AgriBrain - 基于 HomeAssistant + LLM 的智能喷灌联动系统
+# 🌱 Smartwater - 基于 HomeAssistant + LLM 的智能喷灌联动系统
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![HomeAssistant](https://img.shields.io/badge/Home%20Assistant-2024.5-blue)](https://www.home-assistant.io/)
