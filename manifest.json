@@ -1,1 +1,12 @@
-
+{
+  "domain": "smart_irrigator",
+  "name": "SmartIrrigator",
+  "version": "1.0.0",
+  "documentation": "https://github.com/yourname/agribrain",
+  "dependencies": [],
+  "codeowners": ["@yourname"],
+  "requirements": ["requests>=2.25.0"],
+  "iot_class": "cloud_polling",
+  "config_flow": false,
+  "integration_type": "device"
+}
