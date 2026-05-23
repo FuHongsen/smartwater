@@ -1,1 +1,145 @@
+# =============================================================================
+#  AgriBrain 智能喷灌自动化规则
+#  说明：所有自动化依赖自定义服务 agribrain.make_decision
+#  该服务会采集传感器上下文，调用 LLM 做出灌溉决策并执行阀门动作
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# 自动化 1：定期智能灌溉决策 (每30分钟)
+# 触发：每30分钟一次
+# 动作：调用 LLM 决策引擎，分析当前传感器数据并决定是否灌溉
+# -----------------------------------------------------------------------------
+- alias: "定时智能灌溉决策 (番茄区)"
+  description: "每30分钟由 LLM 分析一次番茄区的土壤湿度和天气，决定是否喷灌"
+  trigger:
+    - platform: time_pattern
+      minutes: "/30"              # 每30分钟触发一次
+  # 可选条件：只在白天执行 (避免夜间频繁决策，除非有特殊策略)
+  # condition:
+  #   - condition: sun
+  #     after: sunrise
+  #     before: sunset
+  action:
+    - service: agribrain.make_decision
+      data:
+        area: "tomato_field"      # 地块标识，需与 HA 实体命名一致
+        context_sensors:          # 传递给 LLM 的上下文传感器列表
+          - sensor.soil_moisture_tomato      # 土壤湿度 (单位:%)
+          - weather.openweathermap           # 未来天气预报实体
+          - input_select.tomato_crop_stage   # 当前作物生长阶段 (可选)
+        max_duration: 30          # 单次灌溉最大时长(分钟)，安全限制
+
+# -----------------------------------------------------------------------------
+# 自动化 2：干旱紧急响应
+# 触发：土壤湿度低于严重干旱阈值
+# 动作：立即调用 LLM 决策，LLM 会综合判断是否立即补水
+# -----------------------------------------------------------------------------
+- alias: "干旱紧急灌溉请求 (番茄区)"
+  description: "土壤湿度降至 20% 以下时，LLM 紧急决策立即补水"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.soil_moisture_tomato
+      below: 20                  # 湿度低于 20% 触发
+  action:
+    - service: agribrain.make_decision
+      data:
+        area: "tomato_field"
+        context_sensors:
+          - sensor.soil_moisture_tomato
+          - weather.openweathermap
+        urgency: "high"          # 标记为紧急，LLM 可能会绕过降雨等待策略
+        max_duration: 30
+
+# -----------------------------------------------------------------------------
+# 自动化 3：降雨自动暂停
+# 触发：当地雨量传感器检测到下雨，或天气预报降雨概率突然升高
+# 动作：直接关闭阀门，并通知 LLM 记录状态变更
+# -----------------------------------------------------------------------------
+- alias: "降雨时自动停止灌溉"
+  description: "检测到降雨立即停止当前灌溉，并交由 LLM 评估后续安排"
+  trigger:
+    # 本地雨量传感器（假设实体存在）
+    - platform: state
+      entity_id: binary_sensor.rain_gauge
+      to: "on"
+    # 天气预报降雨概率高于 80%
+    - platform: numeric_state
+      entity_id: weather.openweathermap
+      attribute: forecast.0.precipitation_probability
+      above: 80
+  action:
+    - service: switch.turn_off
+      entity_id: switch.tomato_field_valve   # 强制关闭喷灌阀门
+    - service: agribrain.log_decision        # 记录事件到 LLM 日志
+      data:
+        area: "tomato_field"
+        event: "rain_interrupt"
+        message: "检测到降雨，已自动停止灌溉，等待LLM下次决策"
+    # 可选：通知用户
+    - service: notify.mobile_app_phone
+      data:
+        title: "🌧️ 灌溉中断"
+        message: "番茄区因降雨已停止喷灌，LLM将重新评估。"
+
+# -----------------------------------------------------------------------------
+# 自动化 4：光伏发电不足时降级策略
+# 触发：光伏发电功率低于阈值
+# 动作：调整为仅维持定时灌溉，关闭高功耗 4G 通讯，延迟非紧急传感上报
+# -----------------------------------------------------------------------------
+- alias: "能源不足时灌溉策略降级"
+  description: "光伏功率 < 10W 时，改为每天最多灌溉1次，关闭实时数据上报"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.solar_power
+      below: 10
+  action:
+    - service: input_boolean.turn_on
+      entity_id: input_boolean.low_power_mode   # 开启低功耗模式标志
+    - service: agribrain.set_irrigation_mode
+      data:
+        area: "tomato_field"
+        mode: "eco"                 # LLM 决策引擎进入省电模式
+        max_operations_per_day: 1
+    # 关闭 4G 数据模块 (通过商业设备 API)
+    - service: switch.turn_off
+      entity_id: switch.irrigator_4g_module
+
+# -----------------------------------------------------------------------------
+# 自动化 5：光伏恢复后恢复正常模式
+# -----------------------------------------------------------------------------
+- alias: "能源恢复后恢复正常灌溉策略"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.solar_power
+      above: 30
+  condition:
+    - condition: state
+      entity_id: input_boolean.low_power_mode
+      state: "on"
+  action:
+    - service: input_boolean.turn_off
+      entity_id: input_boolean.low_power_mode
+    - service: switch.turn_on
+      entity_id: switch.irrigator_4g_module
+    - service: agribrain.set_irrigation_mode
+      data:
+        area: "tomato_field"
+        mode: "normal"
+
+# -----------------------------------------------------------------------------
+# 自动化 6：虫情灯触发暂停喷灌 (避免冲刷农药)
+# -----------------------------------------------------------------------------
+- alias: "虫情警报暂停喷灌"
+  description: "虫情灯检测到大量害虫时，暂停喷灌以避免冲刷刚喷洒的农药"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.pest_alert
+      to: "on"
+  action:
+    - service: switch.turn_off
+      entity_id: switch.tomato_field_valve
+    - service: agribrain.set_irrigation_hold
+      data:
+        area: "tomato_field"
+        hold_minutes: 120         # 暂停 2 小时，等待药效吸收
+        reason: "虫情警报，暂停灌溉避免冲刷药剂"
