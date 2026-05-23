@@ -1,1 +1,93 @@
+# =============================================================================
+#  docker-compose.yml - LLM 决策引擎本地开发环境
+#
+#  用途: 快速启动一个本地运行的大语言模型服务 (Ollama)
+#        供 AgriBrain 的 decision_engine 调用。
+#        该文件可单独使用，也可与 HomeAssistant 的部署文件组合。
+#
+#  使用方式:
+#     cd llm_engine/
+#     docker-compose up -d
+#     # 首次启动后需手动拉取模型，例如:
+#     # docker exec -it llm_engine-ollama-1 ollama pull qwen2.5:7b
+#
+#  注意: 在低资源设备 (如树莓派) 上建议使用 1~3B 的小模型。
+# =============================================================================
 
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Ollama - 本地 LLM 推理服务
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest         # 官方镜像，自动包含 CPU 推理
+    container_name: agribrain_ollama
+    restart: unless-stopped             # 异常退出自动重启
+
+    ports:
+      - "11434:11434"                   # Ollama 的 API 端口
+
+    volumes:
+      # 持久化模型文件，避免每次重启重新下载
+      - ollama_data:/root/.ollama
+
+    environment:
+      # 可选：限制 Ollama 使用的 GPU（若主机有 NVIDIA 显卡可取消注释）
+      # - "NVIDIA_VISIBLE_DEVICES=all"
+
+    # 如需 GPU 加速，取消下面的注释并确保安装了 nvidia-container-toolkit
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+    # 健康检查：确保服务就绪后才被 decision_engine 调用
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - agribrain_net
+
+  # ---------------------------------------------------------------------------
+  # 可选：一个简单的初始化脚本，用于自动拉取模型（如果不存在）
+  # ---------------------------------------------------------------------------
+  model_puller:
+    image: curlimages/curl:latest       # 轻量 curl 镜像
+    container_name: agribrain_model_puller
+    depends_on:
+      ollama:
+        condition: service_healthy     # 等待 Ollama 健康检查通过
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "正在检查模型 qwen2.5:7b 是否已存在..."
+        # 调用 Ollama API 拉取模型（若已存在则快速返回）
+        curl -X POST http://ollama:11434/api/pull -d '{"name": "qwen2.5:7b"}'
+        echo "模型准备完毕。"
+    networks:
+      - agribrain_net
+
+# ---------------------------------------------------------------------------
+# 网络定义 - 供 HomeAssistant 或其他容器与本 LLM 服务通信
+# ---------------------------------------------------------------------------
+networks:
+  agribrain_net:
+    name: agribrain_net
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+# 卷定义 - 模型数据持久化
+# ---------------------------------------------------------------------------
+volumes:
+  ollama_data:
+    name: agribrain_ollama_data
